@@ -1,0 +1,43 @@
+# --- Secrets (NEVER commit) -------------------------------------------------
+# Real credentials live in .env; .env.example documents the shape with all
+# sensitive values erased.
+.env
+.env.*
+!.env.example
+
+# makepkg working directories (source checkouts + build trees, never commit)
+pkg/
+src/
+ollama/
+build/
+*.pkg.tar.*
+*.pkg.tar.zst
+
+# makepkg staging leftovers
+*.tar.gz
+*.tar.xz
+*.tar.zst
+*.zip
+
+# Python / uv (dev tooling: playwright, pyautogui)
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# CI / test scratch output
+.cache/
+dist/
+out/
+reports/
+*.log
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/

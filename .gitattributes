@@ -1,0 +1,5 @@
+# Defense in depth: keep secrets out of archives/diffs even if force-added.
+.env export-ignore
+.env.* export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
