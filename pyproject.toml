@@ -1,0 +1,25 @@
+[project]
+name = "ollama-cuda-git-dev"
+version = "0.1.0"
+description = "Dev/test tooling for the cuda11.8 AUR package and its GitHub automation"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.40",
+    "pyautogui>=0.9.54",
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Unit tests must never touch the network or a real display.
+addopts = "-q"
+
+[tool.uv]
+# Chromium and the uv cache are kept inside the workspace because the sandbox
+# blocks writes to ~/.cache and the root filesystem is tight on space.
