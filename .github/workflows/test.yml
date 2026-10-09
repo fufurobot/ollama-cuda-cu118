@@ -1,0 +1,51 @@
+name: Test packaging metadata
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Validate PKGBUILD and CUDA backend wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python
+        run: uv python install 3.13
+
+      - name: Run the packaging test suite
+        run: uv run --with pytest --with requests pytest tests/ -v
+
+      - name: Fail if secrets were ever committed
+        run: |
+          # Defence in depth: a token reaching the repository is unrecoverable
+          # even if a later commit deletes it.
+          if git ls-files | grep -qx '.env'; then
+            echo "::error::.env is tracked; a credential has been published"
+            exit 1
+          fi
+          if git grep -nE 'github_pat_[A-Za-z0-9_]{20,}' -- . ':!*.example' ':!tests/*'; then
+            echo "::error::a GitHub token was found in the working tree"
+            exit 1
+          fi
+          echo "no committed secrets detected"
+
+      - name: Verify .SRCINFO matches the PKGBUILD
+        run: |
+          # makepkg is unavailable on the runner, so compare the fields the
+          # AUR actually reads against the PKGBUILD.
+          pkgver=$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)
+          if ! grep -q "^	pkgver = ${pkgver}$" .SRCINFO; then
+            echo "::error::.SRCINFO pkgver does not match PKGBUILD ($pkgver)"
+            exit 1
+          fi
+          echo ".SRCINFO agrees with PKGBUILD"
