@@ -205,3 +205,42 @@ def test_go_binary_is_still_installed() -> None:
     """The Go binary is the actual executable the package ships."""
     assert "install -Dm755" in PKGBUILD
     assert "/usr/bin/$_pkgname" in PKGBUILD
+
+
+def test_cuda_toolkit_args_are_published_to_the_caller() -> None:
+    """Regression: ollama_append_cuda_toolkit_args must reach its caller.
+
+    It used to delegate to ollama_append_cache_arg_if_set(), which writes via
+    PARENT_SCOPE. That write landed in the wrapper's own scope and was
+    discarded, so CUDAToolkit_ROOT silently never reached the nested build and
+    nvcc was resolved from PATH instead of the pinned toolkit.
+    """
+    text = LOCAL_CMAKE.read_text(encoding="utf-8")
+    start = text.find("function(ollama_append_cuda_toolkit_args")
+    assert start != -1
+    end = text.find("endfunction()", start)
+    body = text[start:end]
+
+    assert "PARENT_SCOPE" in body, (
+        "the wrapper must publish its result to the caller"
+    )
+    assert "set(${output} ${_cuda_toolkit_args} PARENT_SCOPE)" in body, (
+        "the wrapper must set ${output} in PARENT_SCOPE exactly once, from a "
+        "local accumulator"
+    )
+    # Calling the PARENT_SCOPE helper directly with ${output} reintroduces the bug.
+    assert "ollama_append_cache_arg_if_set(${output} CUDAToolkit_ROOT)" not in body, (
+        "delegating to ollama_append_cache_arg_if_set(${output} ...) loses the "
+        "value, because its PARENT_SCOPE write lands in this function's scope"
+    )
+
+
+def test_cuda_compiler_is_forwarded_to_nested_builds() -> None:
+    """CMAKE_CUDA_COMPILER must be forwarded, or nvcc comes from PATH."""
+    text = LOCAL_CMAKE.read_text(encoding="utf-8")
+    start = text.find("function(ollama_append_cuda_toolkit_args")
+    end = text.find("endfunction()", start)
+    body = text[start:end]
+    assert "CMAKE_CUDA_COMPILER" in body, (
+        "CMAKE_CUDA_COMPILER is not forwarded to the nested CUDA build"
+    )
