@@ -1,0 +1,136 @@
+--- a/cmake/local.cmake
++++ b/cmake/local.cmake
+@@ -344,17 +344,39 @@
+ endfunction()
+ 
+ function(ollama_append_cuda_toolkit_args output backend)
+-    # If CUDAToolkit_ROOT is already explicitly set, just forward it.
+-    ollama_append_cache_arg_if_set(${output} CUDAToolkit_ROOT)
+-    if(NOT DEFINED CUDAToolkit_ROOT OR "${CUDAToolkit_ROOT}" STREQUAL "")
++    # Build the additions in a local list and publish them once at the end.
++    # ollama_append_cache_arg_if_set() writes via PARENT_SCOPE, so calling it
++    # directly with ${output} would target this function's own scope and the
++    # caller would never observe the value.
++    set(_cuda_toolkit_args ${${output}})
++
++    if(DEFINED CUDAToolkit_ROOT AND NOT "${CUDAToolkit_ROOT}" STREQUAL "")
++        # An explicit toolkit root wins and is forwarded verbatim.
++        ollama_escape_cmake_list("${CUDAToolkit_ROOT}" _value)
++        list(APPEND _cuda_toolkit_args "-DCUDAToolkit_ROOT=${_value}")
++    else()
+         # Auto-discover CUDA toolkit for the requested backend version on Windows.
+         ollama_backend_cuda_major("${backend}" _cuda_major)
+         ollama_find_windows_cuda_root("${_cuda_major}" _cuda_root)
+         if(NOT "${_cuda_root}" STREQUAL "")
+             ollama_escape_cmake_list("${_cuda_root}" _value)
+-            set(${output} ${${output}} "-DCUDAToolkit_ROOT=${_value}" PARENT_SCOPE)
++            list(APPEND _cuda_toolkit_args "-DCUDAToolkit_ROOT=${_value}")
+         endif()
+     endif()
++
++    # Pin nvcc explicitly when the caller named one. Without this the nested
++    # build resolves nvcc from PATH and can silently pick a different CUDA
++    # than CUDAToolkit_ROOT points at.
++    if(DEFINED CMAKE_CUDA_COMPILER AND NOT "${CMAKE_CUDA_COMPILER}" STREQUAL "")
++        ollama_escape_cmake_list("${CMAKE_CUDA_COMPILER}" _compiler)
++        list(APPEND _cuda_toolkit_args "-DCMAKE_CUDA_COMPILER=${_compiler}")
++    endif()
++    if(DEFINED CMAKE_CUDA_HOST_COMPILER AND NOT "${CMAKE_CUDA_HOST_COMPILER}" STREQUAL "")
++        ollama_escape_cmake_list("${CMAKE_CUDA_HOST_COMPILER}" _host)
++        list(APPEND _cuda_toolkit_args "-DCMAKE_CUDA_HOST_COMPILER=${_host}")
++    endif()
++
++    set(${output} ${_cuda_toolkit_args} PARENT_SCOPE)
+ endfunction()
+ 
+ function(ollama_llama_cuda_preset backend output)
+@@ -710,7 +732,22 @@
+ set(_backend_targets)
+ if(OLLAMA_HAVE_LLAMA_SERVER)
+     foreach(_backend IN LISTS OLLAMA_LLAMA_BACKENDS)
+-        if(_backend STREQUAL "cuda_v12")
++        if(_backend STREQUAL "cuda_v11")
++            # CUDA 11.8 is the last 11.x toolkit and is still required by the
++            # legacy 520.x driver branch. It only reaches sm_90, so it carries
++            # its own preset instead of inheriting the 12/13 architecture lists.
++            ollama_llama_cuda_preset(${_backend} _cuda_preset)
++            set(_cuda_args)
++            ollama_append_cache_arg_if_set(_cuda_args CMAKE_CUDA_ARCHITECTURES)
++            ollama_append_cache_arg_if_set(_cuda_args CMAKE_CUDA_FLAGS)
++            ollama_append_cuda_toolkit_args(_cuda_args ${_backend})
++            ollama_add_llama_server_build(${_backend}
++                PRESET ${_cuda_preset}
++                RUNNER_DIR ${_backend}
++                TARGETS ggml-cuda
++                CMAKE_ARGS ${_cuda_args})
++            list(APPEND _backend_targets ollama-llama-server-${_backend})
++        elseif(_backend STREQUAL "cuda_v12")
+             ollama_llama_cuda_preset(${_backend} _cuda_preset)
+             set(_cuda_args)
+             ollama_append_cache_arg_if_set(_cuda_args CMAKE_CUDA_ARCHITECTURES)
+--- a/llama/server/CMakePresets.json
++++ b/llama/server/CMakePresets.json
+@@ -53,6 +53,30 @@
+       }
+     },
+     {
++      "name": "llama_cuda_v11_base",
++      "hidden": true,
++      "inherits": ["default"],
++      "cacheVariables": {
++        "GGML_CUDA": "ON",
++        "CMAKE_CUDA_FLAGS": "-Wno-deprecated-gpu-targets -t 2",
++        "OLLAMA_RUNNER_DIR": "cuda_v11",
++        "OLLAMA_GPU_BACKEND": "cuda"
++      }
++    },
++    {
++      "name": "llama_cuda_v11_linux",
++      "inherits": ["llama_cuda_v11_base"],
++      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v11",
++      "cacheVariables": {
++        "CMAKE_CUDA_ARCHITECTURES": "61;70;75;80;86;87;89;90;75-virtual;80-virtual;86-virtual"
++      }
++    },
++    {
++      "name": "llama_cuda_v11_user_arch",
++      "inherits": ["llama_cuda_v11_base"],
++      "binaryDir": "${sourceDir}/../../build/llama-server-cuda_v11"
++    },
++    {
+       "name": "llama_cuda_v12_base",
+       "hidden": true,
+       "inherits": ["default"],
+@@ -254,6 +278,16 @@
+       "targets": ["llama-server", "llama-quantize"]
+     },
+     {
++      "name": "llama_cuda_v11_linux",
++      "configurePreset": "llama_cuda_v11_linux",
++      "targets": ["ggml-cuda"]
++    },
++    {
++      "name": "llama_cuda_v11_user_arch",
++      "configurePreset": "llama_cuda_v11_user_arch",
++      "targets": ["ggml-cuda"]
++    },
++    {
+       "name": "llama_cuda_v12_linux",
+       "configurePreset": "llama_cuda_v12_linux",
+       "targets": ["ggml-cuda"]
+--- a/docs/development.md
++++ b/docs/development.md
+@@ -39,7 +39,12 @@
+ cmake --build build --parallel 8
+ ```
+ 
+-Supported backend values are `cuda_v12`, `cuda_v13`, `rocm_v7_1`, `rocm_v7_2`, `vulkan`, `cuda_jetpack5`, and `cuda_jetpack6`.
++Supported backend values are `cuda_v11`, `cuda_v12`, `cuda_v13`, `rocm_v7_1`, `rocm_v7_2`, `vulkan`, `cuda_jetpack5`, and `cuda_jetpack6`.
++
++`cuda_v11` targets CUDA 11.8, the last 11.x toolkit, for hosts pinned to the
++legacy 520.x driver branch. It builds `sm_61` through `sm_90`; `sm_90a`,
++`sm_100` and `sm_120` need CUDA 12 or newer and are unavailable from this
++backend.
+ 
+ Use standard CMake architecture overrides to narrow GPU builds for local hardware:
+ 
