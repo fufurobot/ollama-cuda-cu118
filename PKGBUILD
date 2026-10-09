@@ -9,14 +9,17 @@
 
 pkgname=ollama-cuda-git
 _pkgname=ollama
-pkgver=0.13.3.rc0+r4860+gd475d1f08
-pkgrel=3
+pkgver=0.34.1.rc2+r1+g38fdb5dd5
+pkgrel=1
 pkgdesc='Create, run and share large language models (LLMs) with CUDA'
 arch=(x86_64)
 url='https://github.com/ollama/ollama'
 license=(MIT)
 options=('!lto')
-makedepends=(cmake ninja git go cuda)
+makedepends=(cmake ninja git go clang)
+# The cuda_v11 backend is built against the side-by-side CUDA 11.8 toolkit,
+# which ships nvcc that accepts GCC 10 as a host compiler.
+makedepends+=('cuda11.8' 'gcc10')
 provides=("$_pkgname=$pkgver" "$_pkgname-cuda=$pkgver")
 conflicts=("$_pkgname" "$_pkgname-cuda")
 source=(git+https://github.com/ollama/ollama.git
@@ -48,22 +51,23 @@ build() {
 
   cd ollama
 
-  sed -i 's/PRE_INCLUDE_REGEXES.*/PRE_INCLUDE_REGEXES = ""/' CMakeLists.txt
+  # The superbuild selects GPU backends by name. cuda_v11 is the CUDA 11.8
+  # backend added by this packaging effort; upstream ships cuda_v12/cuda_v13
+  # only, which need a 12.x or 13.x toolkit.
   local cmake_options=(
     -B build
     -G Ninja
     -W no-dev
     -D CMAKE_BUILD_TYPE=Release
     -D CMAKE_INSTALL_PREFIX=/usr
-    # Disable Vulkan/HIP
-    -D CMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE
-    -D CMAKE_HIP_COMPILER=""
-    # For CUDA build only
-    # Sync GPU targets from CMakePresets.json
-    # For CUDA 12
-    # -D CMAKE_CUDA_ARCHITECTURES="50;52;53;60;61;62;70;72;75;80;86;87;89;90;90a"
-    # for CUDA 13
-    -D CMAKE_CUDA_ARCHITECTURES="75;80;86;87;88;89;90;100;103;110;120;121;121-virtual"
+    -D OLLAMA_LLAMA_BACKENDS="cuda_v11"
+    -D OLLAMA_VERSION="$pkgver"
+    # Point CMake at the side-by-side CUDA 11.8 toolkit instead of relying on
+    # PATH, which may resolve to a newer CUDA.
+    -D CUDAToolkit_ROOT="/opt/cuda-11.8"
+    -D CMAKE_CUDA_COMPILER="/opt/cuda-11.8/bin/nvcc"
+    # sm_90a/sm_100/sm_120 are CUDA 12+ only; the cuda_v11 preset already
+    # defaults to sm_61..sm_90, so only override when the user asks for it.
   )
 
   cmake "${cmake_options[@]}"
@@ -78,7 +82,11 @@ check() {
 }
 
 package() {
-  DESTDIR="$pkgdir" cmake --install ollama/build --component CPU
+  # The superbuild exposes one component per artifact group. `ollama-local`
+  # carries the Go binary plus the CPU runners, and `llama-server` carries the
+  # CUDA (cuda_v11) runners produced by the GPU backends.
+  DESTDIR="$pkgdir" cmake --install ollama/build --component ollama-local
+  DESTDIR="$pkgdir" cmake --install ollama/build --component llama-server
 
   install -Dm755 $_pkgname/$_pkgname "$pkgdir/usr/bin/$_pkgname"
   install -dm755 "$pkgdir/var/lib/ollama"
@@ -88,7 +96,5 @@ package() {
   install -Dm644 $_pkgname/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   ln -s /var/lib/ollama "$pkgdir/usr/share/ollama"
-
-  DESTDIR="$pkgdir" cmake --install ollama/build --component CUDA
 }
 # vim:set ts=2 sw=2 et:
