@@ -19,9 +19,15 @@ SECRET_FILES = (".env",)
 
 
 def _git_check_ignore(repo: Path, path: str) -> bool:
-    """True when git would ignore ``path`` inside ``repo``."""
+    """True when git would ignore ``path`` inside ``repo``.
+
+    ``--no-index`` is required: without it git only reports a path as ignored
+    when it actually exists in the working tree, so the check would pass
+    locally (where the makepkg trees exist) and fail in a fresh CI clone
+    (where they do not).
+    """
     result = subprocess.run(
-        ["git", "-C", str(repo), "check-ignore", "--quiet", path],
+        ["git", "-C", str(repo), "check-ignore", "--no-index", "--quiet", path],
         capture_output=True,
     )
     # 0 == ignored, 1 == not ignored, other == error.
@@ -83,8 +89,14 @@ def test_gitattributes_export_ignores_secrets() -> None:
 
 
 def test_makepkg_working_trees_are_ignored() -> None:
-    """src/ and the bare clone are huge downstream trees, never committed."""
-    for path in ("src", "pkg", "ollama"):
+    """src/ and the bare clone are huge downstream trees, never committed.
+
+    The ignore rules use directory patterns (``src/``), which match paths
+    *inside* the directory but not the bare name. Probing a child path is
+    therefore the accurate check, and it is also exactly what ``git add -A``
+    would end up staging.
+    """
+    for path in ("src/ollama", "pkg/ollama-cuda-git", "ollama/objects"):
         assert _git_check_ignore(REPO_ROOT, path), (
             f"{path} is not ignored; a 'git add -A' would commit a full "
             "upstream checkout"
