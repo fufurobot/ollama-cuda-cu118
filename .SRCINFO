@@ -1,6 +1,6 @@
 pkgbase = ollama-cuda-git
 	pkgdesc = Create, run and share large language models (LLMs) with CUDA
-	pkgver = 0.34.1.rc2+r1+g38fdb5dd5
+	pkgver = 0.40.2
 	pkgrel = 1
 	url = https://github.com/ollama/ollama
 	arch = x86_64
@@ -12,18 +12,18 @@ pkgbase = ollama-cuda-git
 	makedepends = clang
 	makedepends = cuda11.8
 	makedepends = gcc10
-	provides = ollama=0.34.1.rc2+r1+g38fdb5dd5
-	provides = ollama-cuda=0.34.1.rc2+r1+g38fdb5dd5
+	provides = ollama=0.40.2
+	provides = ollama-cuda=0.40.2
 	conflicts = ollama
 	conflicts = ollama-cuda
 	options = !lto
-	source = git+https://github.com/ollama/ollama.git
+	source = git+https://github.com/ollama/ollama#tag=v0.40.2
 	source = 0001-add-cuda-v11-backend.patch
 	source = ollama-ld.conf
 	source = ollama.service
 	source = sysusers.conf
 	source = tmpfiles.d
-	b2sums = SKIP
+	b2sums = b6264b9d5d652b14cb6a3dea71277b232dc6c3c69cfd21d880571fd190e14196a084bb19354bc952ac7a22de64f056e6f485c8b3cedd519ea01863e33a4e7902
 	b2sums = SKIP
 	b2sums = 121a7854b5a7ffb60226aaf22eed1f56311ab7d0a5630579525211d5c096040edbcfd2608169a4b6d83e8b4e4855dbb22f8ebf3d52de78a34ea3d4631b7eff36
 	b2sums = 031e0809a7f564de87017401c83956d43ac29bd0e988b250585af728b952a27d139b3cad0ab1e43750e2cd3b617287d3b81efc4a70ddd61709127f68bd15eabd

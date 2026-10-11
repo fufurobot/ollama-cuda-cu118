@@ -115,7 +115,13 @@ if [ ! -f src/ollama/llama/server/CMakePresets.json ]; then
   sudo -u builder -H bash -euo pipefail -c '
     cd /work/src
     rm -rf ollama
-    git clone --depth 1 https://github.com/ollama/ollama.git ollama
+    # Clone the SAME tag the PKGBUILD pins, not upstream HEAD: the probe must
+    # inspect the presets that will actually be built, and makepkg will fetch
+    # this tag too.
+    tag=$(grep -m1 "^source=(git+" /work/PKGBUILD | sed "s/.*#tag=//;s/).*//")
+    tag="${tag/\$pkgver/$(grep -m1 "^pkgver=" /work/PKGBUILD | cut -d= -f2)}"
+    echo "cloning $tag for the probe"
+    git clone --depth 1 --branch "$tag" https://github.com/ollama/ollama.git ollama
     cd ollama
     patch -Np1 -i /work/0001-add-cuda-v11-backend.patch
   '

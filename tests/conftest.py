@@ -22,9 +22,16 @@ def read_pkgbuild(repo_root: Path | None = None) -> str:
 
 
 def _strip_comment(line: str) -> str:
-    """Drop a trailing ``#`` comment, ignoring ``#`` inside quotes."""
+    """Drop a trailing ``#`` comment, ignoring ``#`` inside quotes or a URL.
+
+    A ``#`` only starts a comment when it begins a word. In a PKGBUILD a source
+    entry can carry a VCS fragment such as
+    ``git+https://github.com/ollama/ollama#tag=v$pkgver``, where the ``#`` is
+    part of the URL; treating it as a comment truncated the entry and made the
+    source and b2sums counts disagree.
+    """
     out, quote = [], None
-    for ch in line:
+    for i, ch in enumerate(line):
         if quote:
             if ch == quote:
                 quote = None
@@ -33,6 +40,10 @@ def _strip_comment(line: str) -> str:
             quote = ch
             out.append(ch)
         elif ch == "#":
+            # Keep the fragment when it is attached to the preceding word.
+            if i > 0 and not line[i - 1].isspace():
+                out.append(ch)
+                continue
             break
         else:
             out.append(ch)

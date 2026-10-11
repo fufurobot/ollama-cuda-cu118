@@ -380,7 +380,13 @@ def test_container_script_fetches_source_before_probing() -> None:
         pytest.skip("this repository does not run the probe")
 
     probe_at = text.index("verify_backend_consistency.py")
-    clone_at = text.index("git clone --depth 1 https://github.com/ollama/ollama.git")
+    # The source is fetched with an explicit --branch <tag>, so match the clone
+    # rather than a specific URL form.
+    clone_at = next(
+        i for i, l in enumerate(text.splitlines())
+        if "ollama.git" in l and "clone" in l
+    )
+    clone_at = len("\n".join(text.splitlines()[:clone_at]))
     assert clone_at < probe_at, (
         "the upstream source must be cloned before the architecture probe runs, "
         "otherwise the probe cannot read CMakePresets.json"
@@ -388,4 +394,84 @@ def test_container_script_fetches_source_before_probing() -> None:
     assert "patch -Np1" in text, (
         "the cloned source must be patched, so the probe inspects the presets "
         "the build will actually use"
+    )
+
+
+def test_source_is_pinned_to_a_release_tag() -> None:
+    """An unpinned git source cannot be checksummed, so b2sums is SKIP.
+
+    Pinning to the tag that the official Arch `ollama` package builds gives the
+    source a real digest and makes two builds of the same pkgver identical.
+    """
+    source = pkgbuild_array(PKGBUILD, "source")
+    git_sources = [s for s in source if s.startswith("git+")]
+    assert git_sources, "no VCS source found"
+
+    for entry in git_sources:
+        assert "#tag=" in entry, (
+            f"VCS source is not pinned to a tag, so its checksum cannot be "
+            f"verified: {entry}"
+        )
+        # The tag must follow pkgver, or the digest and the version drift apart.
+        assert "v$pkgver" in entry or "v${pkgver}" in entry, (
+            f"the pinned tag must track $pkgver: {entry}"
+        )
+
+
+def test_pinned_source_has_a_real_checksum() -> None:
+    """A pinned source must not be SKIPped; that is the point of pinning."""
+    source = pkgbuild_array(PKGBUILD, "source")
+    sums = pkgbuild_array(PKGBUILD, "b2sums")
+    assert len(sums) == len(source), "source and b2sums lengths differ"
+
+    for name, digest in zip(source, sums):
+        if not name.startswith("git+"):
+            continue
+        assert digest != "SKIP", (
+            f"the pinned VCS source {name} has b2sums=SKIP, so makepkg will "
+            "not verify it"
+        )
+        # blake2b-512 is 128 hex characters.
+        assert len(digest) == 128 and all(c in "0123456789abcdef" for c in digest), (
+            f"checksum for {name} is not a valid blake2b-512 digest: {digest}"
+        )
+
+
+def test_pkgver_is_not_a_git_describe_string() -> None:
+    """A pinned package must report the tag, not a commit count.
+
+    The previous pkgver() appended `+r<count>+g<sha>`, which contradicts a
+    pinned tag and changes with how the repository was cloned.
+    """
+    pkgver = pkgbuild_scalar(PKGBUILD, "pkgver")
+    assert pkgver is not None
+    assert "+r" not in pkgver and "+g" not in pkgver, (
+        f"pkgver looks like a git-describe string: {pkgver}"
+    )
+    import re as _re
+    assert _re.fullmatch(r"\d+\.\d+\.\d+.*", pkgver), (
+        f"pkgver is not a release version: {pkgver}"
+    )
+
+
+def test_ci_probe_clones_the_pinned_tag() -> None:
+    """The probe must inspect the revision that will actually be built.
+
+    It previously cloned upstream HEAD, which drifts past the pinned tag; the
+    probe would then validate presets that are never compiled.
+    """
+    script = REPO_ROOT / ".github" / "scripts" / "build-in-container.sh"
+    if not script.is_file():
+        pytest.skip("container script not present")
+    text = script.read_text(encoding="utf-8")
+
+    clone_line = next(
+        (l for l in text.splitlines() if "ollama.git" in l and "clone" in l), ""
+    )
+    assert clone_line, "no upstream clone found in the container script"
+    assert "--branch" in clone_line, (
+        "the probe must clone a specific tag rather than HEAD: " + clone_line
+    )
+    assert "tag=" in text, (
+        "the tag should be derived from the PKGBUILD so the two cannot drift"
     )

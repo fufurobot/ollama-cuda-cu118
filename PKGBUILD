@@ -9,7 +9,10 @@
 
 pkgname=ollama-cuda-git
 _pkgname=ollama
-pkgver=0.34.1.rc2+r1+g38fdb5dd5
+# Pinned to the upstream release tag that the official Arch `ollama` package
+# builds (see the sibling /ollama checkout), so the source checksum below is a
+# real digest instead of SKIP and both packages track the same revision.
+pkgver=0.40.2
 pkgrel=1
 pkgdesc='Create, run and share large language models (LLMs) with CUDA'
 arch=(x86_64)
@@ -22,13 +25,13 @@ makedepends=(cmake ninja git go clang)
 makedepends+=('cuda11.8' 'gcc10')
 provides=("$_pkgname=$pkgver" "$_pkgname-cuda=$pkgver")
 conflicts=("$_pkgname" "$_pkgname-cuda")
-source=(git+https://github.com/ollama/ollama.git
+source=(git+https://github.com/ollama/ollama#tag=v$pkgver
   0001-add-cuda-v11-backend.patch
   ollama-ld.conf
   ollama.service
   sysusers.conf
   tmpfiles.d)
-b2sums=('SKIP'
+b2sums=('b6264b9d5d652b14cb6a3dea71277b232dc6c3c69cfd21d880571fd190e14196a084bb19354bc952ac7a22de64f056e6f485c8b3cedd519ea01863e33a4e7902'
         'SKIP'
         '121a7854b5a7ffb60226aaf22eed1f56311ab7d0a5630579525211d5c096040edbcfd2608169a4b6d83e8b4e4855dbb22f8ebf3d52de78a34ea3d4631b7eff36'
         '031e0809a7f564de87017401c83956d43ac29bd0e988b250585af728b952a27d139b3cad0ab1e43750e2cd3b617287d3b81efc4a70ddd61709127f68bd15eabd'
@@ -36,11 +39,12 @@ b2sums=('SKIP'
         'e8f2b19e2474f30a4f984b45787950012668bf0acb5ad1ebb25cd9776925ab4a6aa927f8131ed53e35b1c71b32c504c700fe5b5145ecd25c7a8284373bb951ed')
 
 pkgver() {
+  # The source is pinned to a release tag, so pkgver is already exact. Appending
+  # `+r<count>+g<sha>` here would contradict the pin and make the version depend
+  # on how the tag was cloned. This matches the official Arch ollama package,
+  # which also uses a bare $pkgver with a tagged source.
   cd ollama
-  _version=$(git describe --tags --abbrev=0 | tr - .)
-  _commits=$(git rev-list --count HEAD)
-  _short_commit_hash=$(git rev-parse --short=9 HEAD)
-  echo "${_version#'v'}+r${_commits}+g${_short_commit_hash}"
+  git describe --tags --abbrev=0 | sed 's/^v//'
 }
 
 prepare() {
