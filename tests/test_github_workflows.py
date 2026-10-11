@@ -248,3 +248,26 @@ def test_checksums_cover_the_reassembled_package() -> None:
             f"{path.name} rewrites the checksum filename with a greedy sed, "
             "which strips the digest"
         )
+
+
+def test_container_scripts_are_separate_files() -> None:
+    """Nested single quotes in an inline container script silently truncate.
+
+    `docker run ... bash -c '... sudo ... bash -c "..."'` closes the outer
+    quote at the inner one, so the container receives a mangled script and
+    fails with "cd: /work: No such file or directory". The script is kept in
+    .github/scripts/ instead.
+    """
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        if "docker run" not in text:
+            continue
+        assert "/scripts/" in text, (
+            f"{path.name} inlines the container script; nested quoting makes "
+            "that fragile. Put it in .github/scripts/ instead."
+        )
+        scripts = REPO_ROOT / ".github" / "scripts"
+        assert scripts.is_dir(), f"{path.name} references /scripts but {scripts} is missing"
+        assert list(scripts.glob("*.sh")), "no container script found"

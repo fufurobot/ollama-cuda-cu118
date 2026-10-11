@@ -78,17 +78,12 @@ jobs:
 
       - name: Build the package in an Arch Linux container
         run: |
-          # Everything runs inside archlinux so glibc, gcc-10, go and pacman
-          # match the target distribution. The workspace is bind-mounted so the
-          # finished package lands where the release steps can see it.
-          #
-          # makepkg refuses to run as root, so the container creates an
-          # unprivileged builder. makepkg itself is used for the CUDA toolkit so
-          # the dependency is satisfied the same way a user would satisfy it.
           # $GITHUB_WORKSPACE rather than $PWD: the mount needs a host-absolute
           # path, and an empty or relative value makes Docker silently create
-          # an empty /work instead of bind-mounting, which then fails with
-          # "cd: /work: No such file or directory".
+          # an empty /work instead of bind-mounting.
+          #
+          # The container script lives in .github/scripts/ because it needs
+          # nested quoting, and nested single quotes terminate the outer block.
           work="$GITHUB_WORKSPACE"
           echo "workspace: ${work}"
           test -d "$work" || { echo "::error::workspace ${work} does not exist"; exit 1; }
@@ -102,57 +97,9 @@ jobs:
             -w /work \
             -e MAKEPKG_DIR=/work/.makepkg \
             -e CUDA11_8_REPO="$CUDA11_8_REPO" \
+            -v "${work}/.github/scripts:/scripts:ro" \
             archlinux:base-devel \
-            bash -euo pipefail -c '
-              echo "== refreshing the keyring =="
-              pacman-key --init >/dev/null 2>&1 || true
-              pacman-key --populate archlinux >/dev/null 2>&1 || true
-              pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring >/dev/null
-              pacman -S --noconfirm --needed --noprogressbar base-devel sudo git patch >/dev/null
-
-              useradd -m -s /bin/bash builder
-              echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-              chmod 0440 /etc/sudoers.d/builder
-              chown -R builder:builder /work
-
-              # --- 1. Build and install the CUDA 11.8 toolkit ---------------
-              echo "== building the cuda11.8 toolkit =="
-              git clone --depth 1 "$CUDA11_8_REPO" /tmp/cuda11.8
-              cd /tmp/cuda11.8
-              chown -R builder:builder /tmp/cuda11.8
-              sudo -u builder -H bash -euo pipefail -c "
-                export BUILDDIR=/work/.makepkg/cuda/build
-                export SRCDEST=/work/.makepkg/cuda/src
-                export PKGDEST=/work/.makepkg/cuda/pkg
-                makepkg --noconfirm --force
-              "
-              pacman -U --noconfirm --needed --noprogressbar --overwrite "*" \
-                /work/.makepkg/cuda/pkg/*.pkg.tar.zst
-
-              cudaroot=$(grep -m1 "^_cudaroot=" /tmp/cuda11.8/PKGBUILD | cut -d= -f2)
-              echo "CUDA installed at: ${cudaroot}"
-              "${cudaroot}/bin/nvcc" --version | grep -i release
-
-              # --- 2. Verify the backend list against this toolkit ----------
-              # Proves the preset only advertises architectures this nvcc can
-              # compile, which is exactly what fails later if it is wrong.
-              echo "== probing the cuda_v11 architecture list =="
-              pacman -S --noconfirm --needed --noprogressbar python >/dev/null
-              cd /work
-              python3 tools/verify_backend_consistency.py --cuda-root "${cudaroot}"
-
-              # --- 3. Build ollama -----------------------------------------
-              echo "== building ollama-cuda-git =="
-              sudo -u builder -H bash -euo pipefail -c "
-                cd /work
-                export BUILDDIR=/work/.makepkg/ollama/build
-                export SRCDEST=/work/.makepkg/ollama/src
-                export PKGDEST=/work/.makepkg/ollama/pkg
-                makepkg --noconfirm --force
-              "
-              echo "== produced =="
-              ls -la /work/.makepkg/ollama/pkg
-            '
+            bash /scripts/build-in-container.sh
 
       - name: Verify the built package
         id: verify
