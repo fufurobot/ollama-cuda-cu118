@@ -34,19 +34,21 @@ chown -R builder:builder /work
 # llama.cpp's CUDA sources go through nvcc, and CUDA 11.8 cannot use a modern
 # host compiler: verified locally that GCC 10 compiles cleanly while GCC 16
 # fails with "user-defined literal operator not found" and "__malloc__ does not
-# take arguments". gcc10 is AUR-only, so it is built once and cached.
-if [ -x /work/.makepkg/gcc10/usr/bin/g++-10 ]; then
-  echo "== using cached gcc10 =="
+# take arguments". gcc10 is AUR-only and compiles from source in about two
+# hours, so the built packages are cached.
+GCC10_CACHE=/work/.makepkg/gcc10
+
+if ls "$GCC10_CACHE"/*.pkg.tar.zst >/dev/null 2>&1; then
+  echo "== using cached gcc10 packages =="
 else
   echo "== building gcc10 from the AUR (cached after this run) =="
-  mkdir -p /work/.makepkg/gcc10
-  chown builder:builder /work/.makepkg/gcc10
+  mkdir -p "$GCC10_CACHE"
+  chown builder:builder "$GCC10_CACHE"
   builddir=$(mktemp -d)
   chown builder:builder "$builddir"
   # The gcc10 PKGBUILD verifies PGP signatures on the GCC release tarball with
   # validpgpkeys, and a fresh container has none of those keys, so makepkg
-  # aborts with "One or more PGP signatures could not be verified!". Import them
-  # into the builder's keyring before building.
+  # aborts with "One or more PGP signatures could not be verified!".
   sudo -u builder -H bash -euo pipefail -c "
     cd $builddir
     curl -fsSL 'https://aur.archlinux.org/cgit/aur.git/snapshot/gcc10.tar.gz' -o gcc10.tar.gz
@@ -59,18 +61,19 @@ else
       13975A70E63C361C73AE69EF6EEB81F8981C74C7
     makepkg --noconfirm --nodeps
   "
-  # Install the freshly built packages: the cuda11.8 PKGBUILD depends on
-  # gcc10 and gcc10-libs, and makepkg verifies runtime dependencies before it
-  # will build, so they must actually be registered with pacman rather than
-  # merely unpacked.
-  pacman -U --noconfirm --needed --noprogressbar "$builddir"/gcc10/*.pkg.tar.zst
-
-  # Also unpack a copy where the build can find g++-10 directly.
-  for pkg in "$builddir"/gcc10/*.pkg.tar.zst; do
-    bsdtar -xf "$pkg" -C /work/.makepkg/gcc10 usr/bin usr/lib usr/lib64 usr/include 2>/dev/null || true
-  done
+  # Cache the packages themselves, not an unpacked copy: the cuda11.8 PKGBUILD
+  # depends on gcc10 and gcc10-libs, and makepkg verifies runtime dependencies,
+  # so on a cache hit they still have to be installable.
+  cp "$builddir"/gcc10/*.pkg.tar.zst "$GCC10_CACHE"/
 fi
-export CUDA_HOST_CC=/work/.makepkg/gcc10/usr/bin/g++-10
+
+# Always install, whether the packages came from the cache or were just built.
+# Skipping this on a cache hit was the reason a cached run failed with
+# "cannot resolve gcc10-libs, a dependency of cuda11.8".
+pacman -U --noconfirm --needed --noprogressbar "$GCC10_CACHE"/*.pkg.tar.zst
+
+# The cached packages are installed, so g++-10 is already on PATH.
+export CUDA_HOST_CC=/usr/bin/g++-10
 test -x "$CUDA_HOST_CC" || { echo "ERROR: no usable g++-10"; exit 1; }
 
 # --- 1. Build and install the CUDA 11.8 toolkit ---------------------------

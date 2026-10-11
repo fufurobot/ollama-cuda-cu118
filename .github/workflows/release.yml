@@ -84,7 +84,7 @@ jobs:
           # modern host compiler (GCC 16 fails outright). gcc10 is AUR-only and
           # compiles from source in about two hours, so it is cached.
           path: .makepkg/gcc10
-          key: gcc10-10.5.0-2-${{ runner.os }}
+          key: gcc10-pkgs-10.5.0-2-${{ runner.os }}
 
       - name: Build the package in an Arch Linux container
         run: |
@@ -124,7 +124,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .makepkg/gcc10
-          key: gcc10-10.5.0-2-${{ runner.os }}
+          key: gcc10-pkgs-10.5.0-2-${{ runner.os }}
 
       - name: Install verification tooling
         run: |
