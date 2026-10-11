@@ -22,7 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, pkgbuild_array, pkgbuild_scalar, read_pkgbuild
+from conftest import (
+    REPO_ROOT,
+    pkgbuild_array,
+    pkgbuild_scalar,
+    read_pkgbuild,
+)
 
 PKGBUILD = read_pkgbuild()
 UPSTREAM = REPO_ROOT / "src" / "ollama"
@@ -322,4 +327,36 @@ def test_patch_actually_adds_the_backend() -> None:
     assert "cuda_v11" in text
     assert "PARENT_SCOPE" in text, (
         "the patch must also fix the CUDAToolkit_ROOT PARENT_SCOPE loss"
+    )
+
+
+def test_b2sums_match_the_shipped_files() -> None:
+    """Editing a source without updating b2sums breaks the build.
+
+    The sibling cuda11.8 package shipped this bug: its .pc files were edited
+    for the versioned prefix but their checksums were not, so every build died
+    with 'One or more files did not pass the validity check!'.
+    """
+    import hashlib
+
+    source = pkgbuild_array(PKGBUILD, "source")
+    sums = pkgbuild_array(PKGBUILD, "b2sums")
+    assert len(sums) == len(source), "source and b2sums lengths differ"
+
+    mismatches = []
+    for name, expected in zip(source, sums):
+        if name.startswith(("http://", "https://", "git+")):
+            continue  # External, or SKIP by design for VCS sources.
+        path = REPO_ROOT / name
+        if not path.is_file():
+            continue
+        if expected == "SKIP":
+            continue
+        actual = hashlib.blake2b(path.read_bytes(), digest_size=64).hexdigest()
+        if actual != expected:
+            mismatches.append(name)
+
+    assert not mismatches, (
+        f"these sources do not match their b2sums: {mismatches}. "
+        "Regenerate with 'makepkg -g'."
     )
