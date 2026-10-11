@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -44,9 +45,48 @@ def _upstream_available() -> bool:
     return PRESETS_PATH.is_file()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_upstream() -> None:
+    """Fetch and patch upstream when the checkout is absent.
+
+    Locally the makepkg tree is already present. In CI it is not, and skipping
+    would mean the tests covering the backend wiring never run there - which
+    defeats the purpose. Fetching is cheap next to a CUDA build, and the
+    checkout is cached for the session.
+    """
+    if _upstream_available():
+        return
+
+    repo = "https://github.com/ollama/ollama.git"
+    patch = REPO_ROOT / "0001-add-cuda-v11-backend.patch"
+    UPSTREAM.parent.mkdir(parents=True, exist_ok=True)
+
+    clone = subprocess.run(
+        ["git", "clone", "--depth", "1", repo, str(UPSTREAM)],
+        capture_output=True,
+        text=True,
+    )
+    if clone.returncode != 0:
+        pytest.skip(f"could not fetch upstream for verification: {clone.stderr.strip()[:200]}")
+
+    # Apply the tracked patch, mirroring what the PKGBUILD does in prepare().
+    applied = subprocess.run(
+        ["patch", "-Np1", "-i", str(patch)],
+        cwd=UPSTREAM,
+        capture_output=True,
+        text=True,
+    )
+    if applied.returncode != 0:
+        pytest.fail(
+            "the tracked backend patch does not apply to upstream HEAD:\n"
+            + applied.stdout
+            + applied.stderr
+        )
+
+
 pytestmark = pytest.mark.skipif(
-    not _upstream_available(),
-    reason="upstream ollama checkout is not present",
+    False,
+    reason="upstream is fetched by the _ensure_upstream fixture",
 )
 
 
