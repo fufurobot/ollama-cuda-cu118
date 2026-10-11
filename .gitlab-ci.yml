@@ -25,23 +25,46 @@ variables:
   # The sibling packaging repository that provides CUDA 11.8.
   CUDA11_8_REPO: "https://github.com/fufurobot/cuda11.8.git"
 
-# Make sure the Arch container can build as an unprivileged user: makepkg
-# refuses to run as root, and Arch images run as root by default.
+# Shared, idempotent bootstrap for the Arch container.
 #
-# Defined as a hidden job and consumed with !reference, which is the GitLab
-# idiom for sharing script fragments. A YAML anchor returning a bare list
-# would be embedded as a nested list and rejected by the runner.
-.builder_setup:
+# Three things routinely break an Arch container build:
+#   * the keyring is not populated, so signature verification fails and pacman
+#     refuses to install anything
+#   * the sync database is stale, so a package name is "not found"
+#   * makepkg refuses to run as root, and the image runs as root
+# Shared, idempotent bootstrap for the Arch container.
+#
+# Three things routinely break an Arch container build:
+#   * the keyring is not populated, so signature verification fails and pacman
+#     refuses to install anything
+#   * the sync database is stale, so a package name is "not found"
+#   * makepkg refuses to run as root, and the image runs as root
+.arch_bootstrap:
   before_script:
-    - pacman -Syu $PACMAN_ARGS base-devel git sudo >/dev/null
+    - |
+      # Populate the keyring only if it is missing; the official images ship it
+      # ready and regenerating it is slow.
+      if [ ! -s /etc/pacman.d/gnupg/trustdb.gpg ]; then
+        echo "== initialising the pacman keyring =="
+        pacman-key --init
+        pacman-key --populate archlinux
+      fi
+    - pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring >/dev/null
+    - pacman -S --noconfirm --needed --noprogressbar python uv git >/dev/null
+
+# Bootstrap plus an unprivileged builder, for jobs that run makepkg.
+.arch_builder:
+  before_script:
+    - !reference [.arch_bootstrap, before_script]
+    - pacman -S --noconfirm --needed --noprogressbar base-devel sudo >/dev/null
     - |
       if ! id -u builder >/dev/null 2>&1; then
         useradd -m -s /bin/bash builder
       fi
-    # Quote the whole command: the unquoted colon in "NOPASSWD: ALL" would be
-    # parsed as a YAML mapping and corrupt the job definition.
-    - "echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder"
-    - chmod 0440 /etc/sudoers.d/builder
+      # Quote the whole command: an unquoted colon in "NOPASSWD: ALL" would be
+      # parsed as a YAML mapping and corrupt the job definition.
+      echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+      chmod 0440 /etc/sudoers.d/builder
 
 # ---------------------------------------------------------------------------
 # Fast validation, no toolchain downloads.
@@ -49,7 +72,7 @@ variables:
 metadata:
   stage: test
   before_script:
-    - pacman -Syu $PACMAN_ARGS python uv git >/dev/null
+    - !reference [.arch_bootstrap, before_script]
   script:
     - echo "== validating the CUDA backend wiring =="
     # The upstream checkout is not vendored in CI, so the tests that inspect it
@@ -88,7 +111,7 @@ fetch-upstream:
   stage: test
   needs: []
   before_script:
-    - pacman -Syu $PACMAN_ARGS git >/dev/null
+    - !reference [.arch_bootstrap, before_script]
   script:
     - |
       echo "== checking the tracked patch still applies to upstream HEAD =="
@@ -103,10 +126,10 @@ fetch-upstream:
 
       # The upstream tree is shallow, so reproduce what makepkg does: apply the
       # patch to a working copy and confirm it is clean.
-      if ! git apply --check --verbose "$CI_PROJECT_DIR"/patches/0001-add-cuda-v11-backend.patch; then
-        echo "ERROR: patches/0001-add-cuda-v11-backend.patch no longer applies"
+      if ! git apply --check --verbose "$CI_PROJECT_DIR"/0001-add-cuda-v11-backend.patch; then
+        echo "ERROR: 0001-add-cuda-v11-backend.patch no longer applies"
         echo "Upstream changed one of the patched files:"
-        git apply --check "$CI_PROJECT_DIR"/patches/0001-add-cuda-v11-backend.patch 2>&1 | head -20
+        git apply --check "$CI_PROJECT_DIR"/0001-add-cuda-v11-backend.patch 2>&1 | head -20
         exit 1
       fi
       echo "patch applies cleanly to upstream HEAD"
@@ -119,6 +142,20 @@ fetch-upstream:
       else
         echo "upstream still has no cuda_v11 backend, as expected"
       fi
+    - |
+      echo "== checking the PKGBUILD declares the patch as a source =="
+      # The build passes OLLAMA_LLAMA_BACKENDS=cuda_v11, which only exists
+      # after this patch is applied. If the PKGBUILD stops listing it in
+      # source=(), makepkg will not stage it and prepare() will fail.
+      if ! grep -q '^  0001-add-cuda-v11-backend.patch$' "$CI_PROJECT_DIR"/PKGBUILD; then
+        echo "ERROR: the PKGBUILD does not list the backend patch in source=()"
+        exit 1
+      fi
+      if ! grep -q 'patch -Np1 -i' "$CI_PROJECT_DIR"/PKGBUILD; then
+        echo "ERROR: the PKGBUILD does not apply the backend patch"
+        exit 1
+      fi
+      echo "PKGBUILD stages and applies the backend patch"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
@@ -132,7 +169,7 @@ cuda-toolkit:
   needs: []
   timeout: 6h
   before_script:
-    - !reference [.builder_setup, before_script]
+    - !reference [.arch_builder, before_script]
     - chown -R builder:builder "$CI_PROJECT_DIR"
   script:
     # Fetch just the PKGBUILD first. It is tiny, and it is needed even on a
@@ -199,7 +236,7 @@ build-package:
   needs: ["cuda-toolkit"]
   timeout: 12h
   before_script:
-    - !reference [.builder_setup, before_script]
+    - !reference [.arch_builder, before_script]
     - chown -R builder:builder "$CI_PROJECT_DIR"
   script:
     - |
@@ -218,9 +255,10 @@ build-package:
         mkdir -p "$BUILDDIR" "$SRCDEST" "$PKGDEST"
 
         echo "== makepkg: building ollama-cuda-git =="
-        # --noextract keeps the upstream tree fetched by the earlier job,
-        # because the CUDA backend patch is applied to that working copy.
-        makepkg --noconfirm --force --noextract
+        # No --noextract: makepkg clones the VCS source itself and the
+        # PKGBUILD applies its own backend patch in prepare(). Passing
+        # --noextract would skip the clone and build() would find no source.
+        makepkg --noconfirm --force
 
         echo "== built artifacts =="
         ls -la "$PKGDEST"

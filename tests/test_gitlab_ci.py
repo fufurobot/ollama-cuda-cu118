@@ -17,6 +17,7 @@ a bare checkout.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,24 @@ yaml = pytest.importorskip("yaml")
 
 CI_FILE = REPO_ROOT / ".gitlab-ci.yml"
 SCRIPT_KEYS = ("before_script", "script", "after_script")
+
+# Top-level keys GitLab treats as configuration rather than jobs.
+_RESERVED_KEYS = frozenset(
+    {
+        "stages",
+        "default",
+        "variables",
+        "include",
+        "workflow",
+        "image",
+        "services",
+        "before_script",
+        "after_script",
+        "cache",
+        "pages",
+        "spec",
+    }
+)
 
 # GitLab's `!reference` is a custom tag; register a no-op constructor so the
 # file can be parsed the same way the GitLab linter does.
@@ -55,7 +74,7 @@ def _jobs(ci: dict) -> dict[str, dict]:
     return {
         name: cfg
         for name, cfg in ci.items()
-        if name not in ("stages", "default", "variables", "include", "workflow")
+        if name not in _RESERVED_KEYS
         and not name.startswith(".")
         and isinstance(cfg, dict)
     }
@@ -179,3 +198,59 @@ def test_heavy_jobs_are_bounded(ci: dict) -> None:
         assert "timeout" in ci[job], (
             f"job '{job}' has no timeout; a hung build would occupy a runner"
         )
+
+
+def test_keyring_is_populated_before_pacman_installs(ci: dict) -> None:
+    """An Arch container with an unpopulated keyring cannot install anything.
+
+    Signature verification fails and pacman aborts, which reads as a mysterious
+    CI failure rather than a configuration problem.
+    """
+    assert ".arch_bootstrap" in ci, "the shared Arch bootstrap job is missing"
+    steps = "\n".join(str(s) for s in ci[".arch_bootstrap"]["before_script"])
+    assert "pacman-key --init" in steps, (
+        "the bootstrap must initialise the keyring"
+    )
+    assert "pacman-key --populate" in steps, (
+        "the bootstrap must populate the keyring"
+    )
+    assert "archlinux-keyring" in steps, (
+        "the bootstrap must refresh the archlinux-keyring package"
+    )
+
+
+def test_pacman_is_never_run_interactively(ci: dict) -> None:
+    """Any pacman call must be non-interactive or the job hangs until timeout.
+
+    Scans every job including the hidden ones: the shared bootstrap templates
+    are where the pacman calls actually live, and _jobs() skips them.
+    """
+    for job, cfg in ci.items():
+        if not isinstance(cfg, dict):
+            continue
+        for key in SCRIPT_KEYS:
+            for step in cfg.get(key) or []:
+                if isinstance(step, list):
+                    continue
+                for line in str(step).splitlines():
+                    stripped = line.strip()
+                    # Only real invocations, not the word "pacman" inside an
+                    # echo or a comment.
+                    if not re.match(r"^(sudo\s+)?pacman(-key)?\s", stripped):
+                        continue
+                    if stripped.startswith("#"):
+                        continue
+                    # pacman-key --init/--populate are non-interactive already.
+                    if "pacman-key" in stripped:
+                        continue
+                    assert "--noconfirm" in line or "$PACMAN_ARGS" in line, (
+                        f"job '{job}' runs pacman without --noconfirm: {stripped}"
+                    )
+
+
+def test_builder_user_is_created_for_makepkg_jobs(ci: dict) -> None:
+    """makepkg refuses to run as root; the image runs as root."""
+    assert ".arch_builder" in ci, "the shared builder bootstrap job is missing"
+    steps = "\n".join(str(s) for s in ci[".arch_builder"]["before_script"])
+    assert "useradd" in steps, "the builder user is never created"
+    assert "NOPASSWD" in steps, "the builder user needs passwordless sudo"
