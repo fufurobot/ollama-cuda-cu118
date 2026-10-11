@@ -39,7 +39,7 @@ jobs:
   build-and-release:
     name: Build and publish ollama-cuda-git
     runs-on: ubuntu-latest
-    timeout: 720
+    timeout-minutes: 720
 
     steps:
       - uses: actions/checkout@v4
