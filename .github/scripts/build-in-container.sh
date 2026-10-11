@@ -43,11 +43,20 @@ else
   chown builder:builder /work/.makepkg/gcc10
   builddir=$(mktemp -d)
   chown builder:builder "$builddir"
+  # The gcc10 PKGBUILD verifies PGP signatures on the GCC release tarball with
+  # validpgpkeys, and a fresh container has none of those keys, so makepkg
+  # aborts with "One or more PGP signatures could not be verified!". Import them
+  # into the builder's keyring before building.
   sudo -u builder -H bash -euo pipefail -c "
     cd $builddir
     curl -fsSL 'https://aur.archlinux.org/cgit/aur.git/snapshot/gcc10.tar.gz' -o gcc10.tar.gz
     tar xzf gcc10.tar.gz
     cd gcc10
+    # Not optional: makepkg aborts if any validpgpkey is missing.
+    gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys \
+      F3691687D867B81B51CE07D9BBE43771487328A9 \
+      86CFFCA918CF3AF47147588051E8B148A9999C34 \
+      13975A70E63C361C73AE69EF6EEB81F8981C74C7
     makepkg --noconfirm --nodeps
   "
   for pkg in "$builddir"/gcc10/*.pkg.tar.zst; do
