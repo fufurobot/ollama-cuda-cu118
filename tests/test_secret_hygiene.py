@@ -101,3 +101,20 @@ def test_makepkg_working_trees_are_ignored() -> None:
             f"{path} is not ignored; a 'git add -A' would commit a full "
             "upstream checkout"
         )
+
+
+# GitHub rejects a push whose pack exceeds 2 GiB, so one stray build artifact
+# makes the repository unpushable.
+MAX_TRACKED_FILE_BYTES = 64 * 1024 * 1024
+
+
+def test_no_oversized_files_are_tracked() -> None:
+    """Guard against committing build artifacts or fetched sources."""
+    oversized = []
+    for rel in git_tracked_files(REPO_ROOT):
+        path = REPO_ROOT / rel
+        if path.is_file() and path.stat().st_size > MAX_TRACKED_FILE_BYTES:
+            oversized.append((rel, path.stat().st_size))
+    assert not oversized, (
+        f"tracked files exceed {MAX_TRACKED_FILE_BYTES} bytes: {oversized}"
+    )
