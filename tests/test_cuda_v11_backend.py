@@ -244,3 +244,42 @@ def test_cuda_compiler_is_forwarded_to_nested_builds() -> None:
     assert "CMAKE_CUDA_COMPILER" in body, (
         "CMAKE_CUDA_COMPILER is not forwarded to the nested CUDA build"
     )
+
+
+def test_pkgbuild_applies_the_backend_patch() -> None:
+    """Regression: the PKGBUILD selects cuda_v11 but must also enable it.
+
+    cuda_v11 exists only in the tracked patch. Upstream cmake/local.cmake
+    aborts with "Unknown OLLAMA_LLAMA_BACKENDS entry 'cuda_v11'" otherwise, so
+    selecting the backend without applying the patch fails the build outright.
+    """
+    assert "0001-add-cuda-v11-backend.patch" in PKGBUILD, (
+        "the patch must be listed in source=() or makepkg will not stage it"
+    )
+    assert "patch -Np1 -i" in PKGBUILD, (
+        "the PKGBUILD must apply the patch, e.g. in prepare()"
+    )
+
+    # The patch must be a declared source, so makepkg copies it into $srcdir.
+    source_block = PKGBUILD[PKGBUILD.index("source=("):PKGBUILD.index(")", PKGBUILD.index("source=("))]
+    assert "0001-add-cuda-v11-backend.patch" in source_block, (
+        "the patch is not listed inside source=()"
+    )
+
+
+def test_patch_file_exists_next_to_the_pkgbuild() -> None:
+    """makepkg resolves source=() entries relative to the PKGBUILD."""
+    assert (REPO_ROOT / "0001-add-cuda-v11-backend.patch").is_file(), (
+        "the backend patch is missing from the repository root"
+    )
+
+
+def test_patch_actually_adds_the_backend() -> None:
+    """The patch must contain all three edits, not a stale partial copy."""
+    text = (REPO_ROOT / "0001-add-cuda-v11-backend.patch").read_text(encoding="utf-8")
+    for target in ("cmake/local.cmake", "llama/server/CMakePresets.json", "docs/development.md"):
+        assert target in text, f"the patch does not touch {target}"
+    assert "cuda_v11" in text
+    assert "PARENT_SCOPE" in text, (
+        "the patch must also fix the CUDAToolkit_ROOT PARENT_SCOPE loss"
+    )

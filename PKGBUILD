@@ -23,11 +23,13 @@ makedepends+=('cuda11.8' 'gcc10')
 provides=("$_pkgname=$pkgver" "$_pkgname-cuda=$pkgver")
 conflicts=("$_pkgname" "$_pkgname-cuda")
 source=(git+https://github.com/ollama/ollama.git
+  0001-add-cuda-v11-backend.patch
   ollama-ld.conf
   ollama.service
   sysusers.conf
   tmpfiles.d)
 b2sums=('SKIP'
+        'SKIP'
         '121a7854b5a7ffb60226aaf22eed1f56311ab7d0a5630579525211d5c096040edbcfd2608169a4b6d83e8b4e4855dbb22f8ebf3d52de78a34ea3d4631b7eff36'
         '031e0809a7f564de87017401c83956d43ac29bd0e988b250585af728b952a27d139b3cad0ab1e43750e2cd3b617287d3b81efc4a70ddd61709127f68bd15eabd'
         '68622ac2e20c1d4f9741c57d2567695ec7b5204ab43356d164483cd3bc9da79fad72489bb33c8a17c2e5cb3b142353ed5f466ce857b0f46965426d16fb388632'
@@ -39,6 +41,17 @@ pkgver() {
   _commits=$(git rev-list --count HEAD)
   _short_commit_hash=$(git rev-parse --short=9 HEAD)
   echo "${_version#'v'}+r${_commits}+g${_short_commit_hash}"
+}
+
+prepare() {
+  cd ollama
+
+  # Upstream ships cuda_v12/cuda_v13 backends only, both of which need a 12.x
+  # or 13.x toolkit. The build below selects OLLAMA_LLAMA_BACKENDS=cuda_v11,
+  # and cmake/local.cmake aborts with "Unknown OLLAMA_LLAMA_BACKENDS entry"
+  # unless this patch is applied, so it is a hard requirement rather than a
+  # convenience.
+  patch -Np1 -i "${srcdir}/0001-add-cuda-v11-backend.patch"
 }
 
 build() {
