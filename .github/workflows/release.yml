@@ -110,6 +110,12 @@ jobs:
             archlinux:base-devel \
             bash /scripts/build-in-container.sh
 
+      - name: Install verification tooling
+        run: |
+          # bsdtar reads .pkg.tar.zst and is not present on the base image.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools
+
       - name: Verify the built package
         id: verify
         run: |
