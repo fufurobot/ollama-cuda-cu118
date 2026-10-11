@@ -85,12 +85,20 @@ jobs:
           # makepkg refuses to run as root, so the container creates an
           # unprivileged builder. makepkg itself is used for the CUDA toolkit so
           # the dependency is satisfied the same way a user would satisfy it.
-          mkdir -p "$PWD/.makepkg/ollama/pkg" "$PWD/.makepkg/ollama/build" \
-                   "$PWD/.makepkg/ollama/src" "$PWD/.makepkg/cuda/pkg" \
-                   "$PWD/.makepkg/cuda/build" "$PWD/.makepkg/cuda/src"
+          # $GITHUB_WORKSPACE rather than $PWD: the mount needs a host-absolute
+          # path, and an empty or relative value makes Docker silently create
+          # an empty /work instead of bind-mounting, which then fails with
+          # "cd: /work: No such file or directory".
+          work="$GITHUB_WORKSPACE"
+          echo "workspace: ${work}"
+          test -d "$work" || { echo "::error::workspace ${work} does not exist"; exit 1; }
+
+          mkdir -p "$work/.makepkg/ollama/pkg" "$work/.makepkg/ollama/build" \
+                   "$work/.makepkg/ollama/src" "$work/.makepkg/cuda/pkg" \
+                   "$work/.makepkg/cuda/build" "$work/.makepkg/cuda/src"
 
           docker run --rm \
-            -v "$PWD:/work" \
+            -v "${work}:/work" \
             -w /work \
             -e MAKEPKG_DIR=/work/.makepkg \
             -e CUDA11_8_REPO="$CUDA11_8_REPO" \
