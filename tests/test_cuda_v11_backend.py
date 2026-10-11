@@ -360,3 +360,32 @@ def test_b2sums_match_the_shipped_files() -> None:
         f"these sources do not match their b2sums: {mismatches}. "
         "Regenerate with 'makepkg -g'."
     )
+
+
+def test_container_script_fetches_source_before_probing() -> None:
+    """The architecture probe reads the upstream presets, which makepkg has not
+    fetched yet at that point in the script.
+
+    The probe opens src/ollama/llama/server/CMakePresets.json. That path only
+    exists after makepkg clones the VCS source, so running the probe first
+    failed with FileNotFoundError. The script must clone and patch the source
+    before probing.
+    """
+    script = (REPO_ROOT / ".github" / "scripts" / "build-in-container.sh")
+    if not script.is_file():
+        pytest.skip("container script not present")
+    text = script.read_text(encoding="utf-8")
+
+    if "verify_backend_consistency.py" not in text:
+        pytest.skip("this repository does not run the probe")
+
+    probe_at = text.index("verify_backend_consistency.py")
+    clone_at = text.index("git clone --depth 1 https://github.com/ollama/ollama.git")
+    assert clone_at < probe_at, (
+        "the upstream source must be cloned before the architecture probe runs, "
+        "otherwise the probe cannot read CMakePresets.json"
+    )
+    assert "patch -Np1" in text, (
+        "the cloned source must be patched, so the probe inspects the presets "
+        "the build will actually use"
+    )

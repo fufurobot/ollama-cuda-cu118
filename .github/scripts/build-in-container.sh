@@ -98,9 +98,27 @@ echo "CUDA installed at: ${cudaroot}"
 # --- 2. Verify the backend list against this toolkit ----------------------
 # Proves the preset only advertises architectures this nvcc can compile, which
 # is exactly what fails later in the build if it is wrong.
-echo "== probing the cuda_v11 architecture list =="
-pacman -S --noconfirm --needed --noprogressbar python >/dev/null
+#
+# The probe reads src/ollama/llama/server/CMakePresets.json, which makepkg only
+# creates when it fetches the VCS source. Fetch and patch it here first, both
+# so the probe has something to read and so it inspects the patched presets
+# that the build will actually use.
+echo "== fetching the upstream source for the probe =="
+pacman -S --noconfirm --needed --noprogressbar python patch >/dev/null
 cd /work
+mkdir -p src
+if [ ! -f src/ollama/llama/server/CMakePresets.json ]; then
+  chown builder:builder src
+  sudo -u builder -H bash -euo pipefail -c '
+    cd /work/src
+    rm -rf ollama
+    git clone --depth 1 https://github.com/ollama/ollama.git ollama
+    cd ollama
+    patch -Np1 -i /work/0001-add-cuda-v11-backend.patch
+  '
+fi
+
+echo "== probing the cuda_v11 architecture list =="
 python3 tools/verify_backend_consistency.py --cuda-root "${cudaroot}"
 
 # --- 3. Build ollama ------------------------------------------------------
