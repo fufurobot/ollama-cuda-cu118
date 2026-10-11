@@ -23,7 +23,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Run the packaging test suite
-        run: uv run --with pytest --with requests pytest tests/ -v
+        run: uv run --with pytest --with requests --with pyyaml pytest tests/ -v
 
       - name: Fail if secrets were ever committed
         run: |

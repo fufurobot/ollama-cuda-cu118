@@ -10,6 +10,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pyyaml>=6.0",
     "playwright>=1.40",
     "pyautogui>=0.9.54",
     "pytest>=8.0",

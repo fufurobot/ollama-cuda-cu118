@@ -1,0 +1,256 @@
+# GitLab CI for the ollama-cuda-git AUR package.
+#
+# Builds inside an Arch Linux container. The package compiles llama.cpp's CUDA
+# backend against the side-by-side CUDA 11.8 toolkit, which is not packaged in
+# the official repositories, so this pipeline builds and installs the sibling
+# cuda11.8 package first.
+#
+# Stages:
+#   * test   - fast validation, runs on every push
+#   * cuda   - builds + installs the CUDA 11.8 toolkit (heavy, cached)
+#   * build  - builds the ollama package
+
+stages:
+  - test
+  - cuda
+  - build
+
+default:
+  # Official Arch Linux image; pinned for reproducibility.
+  image: archlinux:base-devel
+
+variables:
+  PACMAN_ARGS: "--noconfirm --needed --noprogressbar"
+  MAKEPKG_DIR: "$CI_PROJECT_DIR/.makepkg"
+  # The sibling packaging repository that provides CUDA 11.8.
+  CUDA11_8_REPO: "https://github.com/fufurobot/cuda11.8.git"
+
+# Make sure the Arch container can build as an unprivileged user: makepkg
+# refuses to run as root, and Arch images run as root by default.
+#
+# Defined as a hidden job and consumed with !reference, which is the GitLab
+# idiom for sharing script fragments. A YAML anchor returning a bare list
+# would be embedded as a nested list and rejected by the runner.
+.builder_setup:
+  before_script:
+    - pacman -Syu $PACMAN_ARGS base-devel git sudo >/dev/null
+    - |
+      if ! id -u builder >/dev/null 2>&1; then
+        useradd -m -s /bin/bash builder
+      fi
+    # Quote the whole command: the unquoted colon in "NOPASSWD: ALL" would be
+    # parsed as a YAML mapping and corrupt the job definition.
+    - "echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder"
+    - chmod 0440 /etc/sudoers.d/builder
+
+# ---------------------------------------------------------------------------
+# Fast validation, no toolchain downloads.
+# ---------------------------------------------------------------------------
+metadata:
+  stage: test
+  before_script:
+    - pacman -Syu $PACMAN_ARGS python uv git >/dev/null
+  script:
+    - echo "== validating the CUDA backend wiring =="
+    # The upstream checkout is not vendored in CI, so the tests that inspect it
+    # skip; the packaging assertions still run.
+    - uv run --with pytest --with requests --with pyyaml pytest tests/ -v
+    - |
+      echo "== checking .SRCINFO agrees with the PKGBUILD =="
+      pkgver=$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)
+      if ! grep -q "^	pkgver = ${pkgver}$" .SRCINFO; then
+        echo "ERROR: .SRCINFO pkgver does not match PKGBUILD (${pkgver})"
+        exit 1
+      fi
+      echo ".SRCINFO agrees with PKGBUILD (${pkgver})"
+    - |
+      echo "== checking no secrets were committed =="
+      if git ls-files | grep -qx '.env'; then
+        echo "ERROR: .env is tracked; a credential has been published"
+        exit 1
+      fi
+      if git grep -nE 'github_pat_[A-Za-z0-9_]{20,}' -- . ':!*.example' ':!tests/*'; then
+        echo "ERROR: a GitHub token was found in the working tree"
+        exit 1
+      fi
+      echo "no committed secrets detected"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# Fetch upstream ollama at the revision the PKGBUILD expects. The packaging
+# needs the source tree present because the CUDA backend patch is applied to
+# it.
+# ---------------------------------------------------------------------------
+fetch-upstream:
+  stage: test
+  needs: []
+  before_script:
+    - pacman -Syu $PACMAN_ARGS git >/dev/null
+  script:
+    - |
+      echo "== checking the tracked patch still applies to upstream HEAD =="
+      # This package is a VCS package (source=git+https://...), so upstream
+      # HEAD is what actually gets built. Verify the cuda_v11 patch applies to
+      # it now, so a rebase or rename upstream is caught in minutes rather than
+      # after a multi-hour CUDA build.
+      rm -rf upstream
+      git clone --depth 1 https://github.com/ollama/ollama.git upstream
+      cd upstream
+      echo "upstream HEAD: $(git rev-parse --short=9 HEAD) ($(git describe --tags --abbrev=0 2>/dev/null || echo no-tag))"
+
+      # The upstream tree is shallow, so reproduce what makepkg does: apply the
+      # patch to a working copy and confirm it is clean.
+      if ! git apply --check --verbose "$CI_PROJECT_DIR"/patches/0001-add-cuda-v11-backend.patch; then
+        echo "ERROR: patches/0001-add-cuda-v11-backend.patch no longer applies"
+        echo "Upstream changed one of the patched files:"
+        git apply --check "$CI_PROJECT_DIR"/patches/0001-add-cuda-v11-backend.patch 2>&1 | head -20
+        exit 1
+      fi
+      echo "patch applies cleanly to upstream HEAD"
+    - |
+      echo "== checking the CUDA 11.8 backend is still absent upstream =="
+      # If upstream ever grows a cuda_v11 backend, this patch becomes
+      # redundant and should be dropped rather than conflict.
+      if grep -q '"name": "llama_cuda_v11' upstream/llama/server/CMakePresets.json 2>/dev/null; then
+        echo "NOTE: upstream now provides a cuda_v11 backend; the patch is redundant"
+      else
+        echo "upstream still has no cuda_v11 backend, as expected"
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# Build + install CUDA 11.8. Cached because the installer is ~4.3 GB.
+# ---------------------------------------------------------------------------
+cuda-toolkit:
+  stage: cuda
+  needs: []
+  timeout: 6h
+  before_script:
+    - !reference [.builder_setup, before_script]
+    - chown -R builder:builder "$CI_PROJECT_DIR"
+  script:
+    # Fetch just the PKGBUILD first. It is tiny, and it is needed even on a
+    # cache hit to discover the install prefix, so it cannot live inside the
+    # conditional build branch below.
+    - |
+      echo "== fetching the cuda11.8 PKGBUILD =="
+      rm -rf cuda11.8-src
+      git clone --depth 1 "$CUDA11_8_REPO" cuda11.8-src
+      cudaroot=$(grep -m1 '^_cudaroot=' cuda11.8-src/PKGBUILD | cut -d= -f2)
+      # Publish the prefix for later jobs via a dotenv artifact, so no job has
+      # to guess or hardcode the path.
+      echo "CUDA_ROOT=${cudaroot}" > cuda.env
+      echo "resolved CUDA prefix: ${cudaroot}"
+    - |
+      sudo -u builder -H bash -euo pipefail -c '
+        cd "$CI_PROJECT_DIR"
+        export BUILDDIR="$MAKEPKG_DIR/cuda/build"
+        export SRCDEST="$MAKEPKG_DIR/cuda/src"
+        export PKGDEST="$MAKEPKG_DIR/cuda/pkg"
+        mkdir -p "$BUILDDIR" "$SRCDEST" "$PKGDEST"
+
+        if ls "$PKGDEST"/*.pkg.tar.zst >/dev/null 2>&1; then
+          echo "== reusing cached cuda11.8 package =="
+          exit 0
+        fi
+
+        echo "== building cuda11.8 =="
+        cd cuda11.8-src
+        makepkg --noconfirm --force
+      '
+    - |
+      echo "== installing the toolkit =="
+      shopt -s nullglob
+      pkgs=("$MAKEPKG_DIR"/cuda/pkg/*.pkg.tar.zst cuda11.8-src/*.pkg.tar.zst)
+      if (( ${#pkgs[@]} == 0 )); then
+        echo "ERROR: cuda11.8 did not produce a package"
+        exit 1
+      fi
+      # The package installs to a versioned prefix, so it does not replace any
+      # distro files; --overwrite keeps re-runs idempotent.
+      pacman -U $PACMAN_ARGS --overwrite '*'
+
+      source cuda.env
+      "${CUDA_ROOT}/bin/nvcc" --version | grep -i release
+  artifacts:
+    reports:
+      # Makes $CUDA_ROOT available to later jobs.
+      dotenv: cuda.env
+  cache:
+    key: cuda11.8-package
+    paths:
+      - .makepkg/cuda/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# Build the ollama package.
+# ---------------------------------------------------------------------------
+build-package:
+  stage: build
+  needs: ["cuda-toolkit"]
+  timeout: 12h
+  before_script:
+    - !reference [.builder_setup, before_script]
+    - chown -R builder:builder "$CI_PROJECT_DIR"
+  script:
+    - |
+      echo "== verifying the CUDA 11.8 architecture list against the toolkit =="
+      # Proves the preset only advertises architectures this nvcc can compile.
+      python3 --version >/dev/null 2>&1 || pacman -S $PACMAN_ARGS python >/dev/null
+      # CUDA_ROOT is provided by the cuda-toolkit job's dotenv artifact.
+      echo "using CUDA at: ${CUDA_ROOT}"
+      python3 tools/verify_backend_consistency.py --cuda-root "${CUDA_ROOT}"
+    - |
+      sudo -u builder -H bash -euo pipefail -c '
+        cd "$CI_PROJECT_DIR"
+        export BUILDDIR="$MAKEPKG_DIR/ollama/build"
+        export SRCDEST="$MAKEPKG_DIR/ollama/src"
+        export PKGDEST="$MAKEPKG_DIR/ollama/pkg"
+        mkdir -p "$BUILDDIR" "$SRCDEST" "$PKGDEST"
+
+        echo "== makepkg: building ollama-cuda-git =="
+        # --noextract keeps the upstream tree fetched by the earlier job,
+        # because the CUDA backend patch is applied to that working copy.
+        makepkg --noconfirm --force --noextract
+
+        echo "== built artifacts =="
+        ls -la "$PKGDEST"
+      '
+    - |
+      echo "== verifying the built package =="
+      shopt -s nullglob
+      pkgs=("$MAKEPKG_DIR"/ollama/pkg/*.pkg.tar.zst)
+      if (( ${#pkgs[@]} == 0 )); then
+        echo "ERROR: no package was produced"
+        exit 1
+      fi
+      for pkg in "${pkgs[@]}"; do
+        echo "checking $(basename "$pkg")"
+        bsdtar -tf "$pkg" >/dev/null
+        echo "  archive OK ($(bsdtar -tf "$pkg" | wc -l) entries)"
+        if ! bsdtar -tf "$pkg" | grep -qx './usr/bin/ollama'; then
+          echo "ERROR: $(basename "$pkg") does not contain usr/bin/ollama"
+          exit 1
+        fi
+        echo "  contains usr/bin/ollama"
+      done
+  artifacts:
+    name: "ollama-cuda-git-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - .makepkg/ollama/pkg/*.pkg.tar.zst
+    expire_in: 1 week
+  rules:
+    # Multi-hour CUDA build: manual on branches, automatic for tags.
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: false
