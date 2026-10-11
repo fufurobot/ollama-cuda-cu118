@@ -475,3 +475,21 @@ def test_ci_probe_clones_the_pinned_tag() -> None:
     assert "tag=" in text, (
         "the tag should be derived from the PKGBUILD so the two cannot drift"
     )
+
+
+def test_no_source_is_skipped() -> None:
+    """Every source can and should carry a real digest.
+
+    A SKIP entry means makepkg downloads or clones without verifying anything.
+    For a local patch file there is no excuse: it is right here in the
+    repository.
+    """
+    source = pkgbuild_array(PKGBUILD, "source")
+    sums = pkgbuild_array(PKGBUILD, "b2sums")
+    assert len(sums) == len(source), "source and b2sums lengths differ"
+
+    skipped = [n for n, d in zip(source, sums) if d == "SKIP"]
+    assert not skipped, (
+        f"these sources are not checksummed: {skipped}. Regenerate with "
+        "'makepkg -g'."
+    )
