@@ -75,8 +75,10 @@ metadata:
     - !reference [.arch_bootstrap, before_script]
   script:
     - echo "== validating the CUDA backend wiring =="
-    # The upstream checkout is not vendored in CI, so the tests that inspect it
-    # skip; the packaging assertions still run.
+    # 'patch' is required because the test suite fetches upstream and applies
+    # the tracked backend patch when the checkout is absent, which is always
+    # the case in a fresh clone.
+    - pacman -S --noconfirm --needed --noprogressbar patch >/dev/null
     - uv run --with pytest --with requests --with pyyaml pytest tests/ -v
     - |
       echo "== checking .SRCINFO agrees with the PKGBUILD =="
