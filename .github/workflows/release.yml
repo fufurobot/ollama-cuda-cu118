@@ -110,6 +110,12 @@ jobs:
             archlinux:base-devel \
             bash /scripts/build-in-container.sh
 
+          # The container chowns the bind mount to the unprivileged builder
+          # user, leaving the runner unable to create files in the workspace
+          # afterwards. Take ownership back before continuing.
+          sudo chown -R "$(id -u):$(id -g)" "${work}"
+          ls -la "${work}/.makepkg/ollama/pkg"
+
       - name: Install verification tooling
         run: |
           # bsdtar reads .pkg.tar.zst and is not present on the base image.
