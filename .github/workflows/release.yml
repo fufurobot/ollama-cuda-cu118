@@ -203,8 +203,23 @@ jobs:
             split -b "$limit" -d --suffix-length=2 "$pkg" "release-assets/${base}.part-"
           fi
 
-          ( cd release-assets && sha256sum ./* > SHA256SUMS.txt
-            cat SHA256SUMS.txt )
+          # Checksums must cover BOTH the files actually published and the
+          # name the user ends up with after reassembling, otherwise the
+          # documented `sha256sum -c SHA256SUMS.txt` fails on the joined file.
+          (
+            cd release-assets
+            : > SHA256SUMS.txt
+            if ls ./*.part-* >/dev/null 2>&1; then
+              # Whole-package digest, recorded under the reassembled name.
+              digest=$(sha256sum "$GITHUB_WORKSPACE/$pkg" | cut -d" " -f1)
+              printf "%s  %s\n" "$digest" "$base" >> SHA256SUMS.txt
+              # Per-part digests, so a bad download is caught before joining.
+              sha256sum ./*.part-* >> SHA256SUMS.txt
+            else
+              sha256sum "$base" >> SHA256SUMS.txt
+            fi
+            cat SHA256SUMS.txt
+          )
 
           echo "=== upload set ==="
           ls -la release-assets/
