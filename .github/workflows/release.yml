@@ -76,6 +76,15 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "publishing: ${tag}"
 
+      - name: Cache the GCC 10 host compiler
+        uses: actions/cache@v4
+        with:
+          # nvcc compiles llama.cpp's CUDA sources, and CUDA 11.8 cannot use a
+          # modern host compiler (GCC 16 fails outright). gcc10 is AUR-only, so
+          # it is built once and cached rather than costing ~40 minutes per run.
+          path: .makepkg/gcc10
+          key: gcc10-10.5.0-2-${{ runner.os }}
+
       - name: Build the package in an Arch Linux container
         run: |
           # $GITHUB_WORKSPACE rather than $PWD: the mount needs a host-absolute

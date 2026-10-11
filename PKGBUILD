@@ -79,6 +79,13 @@ build() {
     # PATH, which may resolve to a newer CUDA.
     -D CUDAToolkit_ROOT="/opt/cuda-11.8"
     -D CMAKE_CUDA_COMPILER="/opt/cuda-11.8/bin/nvcc"
+    # CUDA 11.8 rejects a modern host compiler: GCC 16 fails with
+    # "user-defined literal operator not found" and "__malloc__ does not take
+    # arguments". Pin the host compiler rather than relying on PATH, which in
+    # CI resolves to the container's default GCC. CUDA_HOST_CC lets the build
+    # point at a g++-10 that is not in /usr/bin; it falls back to the g++
+    # symlink the cuda11.8 package installs.
+    -D CMAKE_CUDA_HOST_COMPILER="${CUDA_HOST_CC:-/opt/cuda-11.8/bin/g++}"
     # sm_90a/sm_100/sm_120 are CUDA 12+ only; the cuda_v11 preset already
     # defaults to sm_61..sm_90, so only override when the user asks for it.
   )

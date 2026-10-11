@@ -18,12 +18,44 @@ pacman-key --init >/dev/null 2>&1 || true
 pacman-key --populate archlinux >/dev/null 2>&1 || true
 pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring >/dev/null
 pacman -S --noconfirm --needed --noprogressbar base-devel sudo git patch >/dev/null
+# Build-time dependencies that ARE in the official repositories. gcc10 is
+# AUR-only and is not needed here: the PKGBUILD only symlinks gcc-10 inside the
+# cuda11.8 package, so it is a runtime dependency of that package rather than a
+# build requirement for ollama.
+pacman -S --noconfirm --needed --noprogressbar cmake ninja go clang >/dev/null
 
 # makepkg refuses to run as root; the image runs as root.
 useradd -m -s /bin/bash builder
 echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
 chmod 0440 /etc/sudoers.d/builder
 chown -R builder:builder /work
+
+# --- 0. Build an old host compiler ---------------------------------------
+# llama.cpp's CUDA sources go through nvcc, and CUDA 11.8 cannot use a modern
+# host compiler: verified locally that GCC 10 compiles cleanly while GCC 16
+# fails with "user-defined literal operator not found" and "__malloc__ does not
+# take arguments". gcc10 is AUR-only, so it is built once and cached.
+if [ -x /work/.makepkg/gcc10/usr/bin/g++-10 ]; then
+  echo "== using cached gcc10 =="
+else
+  echo "== building gcc10 from the AUR (cached after this run) =="
+  mkdir -p /work/.makepkg/gcc10
+  chown builder:builder /work/.makepkg/gcc10
+  builddir=$(mktemp -d)
+  chown builder:builder "$builddir"
+  sudo -u builder -H bash -euo pipefail -c "
+    cd $builddir
+    curl -fsSL 'https://aur.archlinux.org/cgit/aur.git/snapshot/gcc10.tar.gz' -o gcc10.tar.gz
+    tar xzf gcc10.tar.gz
+    cd gcc10
+    makepkg --noconfirm --nodeps
+  "
+  for pkg in "$builddir"/gcc10/*.pkg.tar.zst; do
+    bsdtar -xf "$pkg" -C /work/.makepkg/gcc10 usr/bin usr/lib usr/lib64 usr/include 2>/dev/null || true
+  done
+fi
+export CUDA_HOST_CC=/work/.makepkg/gcc10/usr/bin/g++-10
+test -x "$CUDA_HOST_CC" || { echo "ERROR: no usable g++-10"; exit 1; }
 
 # --- 1. Build and install the CUDA 11.8 toolkit ---------------------------
 echo "== building the cuda11.8 toolkit =="
@@ -53,12 +85,20 @@ python3 tools/verify_backend_consistency.py --cuda-root "${cudaroot}"
 
 # --- 3. Build ollama ------------------------------------------------------
 echo "== building ollama-cuda-git =="
-sudo -u builder -H bash -euo pipefail -c '
+# Put the cached GCC 10 first in PATH and tell CMake explicitly, so nvcc cannot
+# fall back to the container's GCC 16.
+sudo -u builder -H \
+  PATH="/work/.makepkg/gcc10/usr/bin:$PATH" \
+  CUDA_HOST_CC="$CUDA_HOST_CC" \
+  bash -euo pipefail -c '
   cd /work
   export BUILDDIR=/work/.makepkg/ollama/build
   export SRCDEST=/work/.makepkg/ollama/src
   export PKGDEST=/work/.makepkg/ollama/pkg
-  makepkg --noconfirm --force
+  # --nodeps: gcc10 is AUR-only and only needed at runtime by cuda11.8, whose
+  # package this script already installed. The verification step afterwards
+  # checks the package actually carries cuda_v11 runners.
+  makepkg --noconfirm --force --nodeps
 '
 echo "== produced =="
 ls -la /work/.makepkg/ollama/pkg
