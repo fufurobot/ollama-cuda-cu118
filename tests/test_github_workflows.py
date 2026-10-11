@@ -306,3 +306,30 @@ def test_release_verifies_the_main_package_separately() -> None:
         assert "for pkg in" in text, (
             f"{path.name} does not iterate the built packages"
         )
+
+
+def test_expensive_caches_save_even_when_the_build_fails() -> None:
+    """actions/cache only saves on success, which discards hours of work.
+
+    gcc10 compiles from source in about two hours. A build that fails later --
+    for an unrelated reason -- would throw that away, so the cost is paid again
+    on the next attempt. The cache is therefore written with
+    actions/cache/save under `if: always()`.
+    """
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        if "gcc10" not in text:
+            continue
+        assert "actions/cache/restore@v4" in text, (
+            f"{path.name} should restore the gcc10 cache explicitly"
+        )
+        assert "actions/cache/save@v4" in text, (
+            f"{path.name} must save the gcc10 cache with actions/cache/save; "
+            "the combined action only saves on success"
+        )
+        assert "always()" in text, (
+            f"{path.name} must save the cache under 'if: always()', or a "
+            "failed build discards a two-hour GCC compile"
+        )

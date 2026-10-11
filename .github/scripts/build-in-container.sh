@@ -59,6 +59,13 @@ else
       13975A70E63C361C73AE69EF6EEB81F8981C74C7
     makepkg --noconfirm --nodeps
   "
+  # Install the freshly built packages: the cuda11.8 PKGBUILD depends on
+  # gcc10 and gcc10-libs, and makepkg verifies runtime dependencies before it
+  # will build, so they must actually be registered with pacman rather than
+  # merely unpacked.
+  pacman -U --noconfirm --needed --noprogressbar "$builddir"/gcc10/*.pkg.tar.zst
+
+  # Also unpack a copy where the build can find g++-10 directly.
   for pkg in "$builddir"/gcc10/*.pkg.tar.zst; do
     bsdtar -xf "$pkg" -C /work/.makepkg/gcc10 usr/bin usr/lib usr/lib64 usr/include 2>/dev/null || true
   done
@@ -75,7 +82,11 @@ sudo -u builder -H bash -euo pipefail -c '
   export BUILDDIR=/work/.makepkg/cuda/build
   export SRCDEST=/work/.makepkg/cuda/src
   export PKGDEST=/work/.makepkg/cuda/pkg
-  makepkg --noconfirm --force
+  # --nodeps: cuda11.8 also depends on nvidia-utils and opencl-nvidia, which
+  # require an NVIDIA driver stack that a CI runner has no use for. The toolkit
+  # is only being built here to compile ollama, and the architecture probe
+  # afterwards proves the resulting nvcc actually works.
+  makepkg --noconfirm --force --nodeps
 '
 pacman -U --noconfirm --needed --noprogressbar --overwrite "*" \
   /work/.makepkg/cuda/pkg/*.pkg.tar.zst
