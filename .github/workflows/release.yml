@@ -131,12 +131,18 @@ jobs:
             bsdtar -tf "$pkg" >/dev/null
             echo "  archive OK ($(bsdtar -tf "$pkg" | wc -l) entries)"
 
+            # Normalise the listing (drop a leading "./") before matching:
+            # makepkg emits "usr/..." while a hand-built archive emits
+            # "./usr/...", and a check hard-coding either form fails against
+            # the other. This is what broke the sibling cuda11.8 workflow.
+            bsdtar -tf "$pkg" | sed 's|^\./||' > /tmp/entries.txt
+
             # The binary and the CUDA runners are what make this package useful.
-            bsdtar -tf "$pkg" | grep -qx './usr/bin/ollama' \
+            grep -qx 'usr/bin/ollama' /tmp/entries.txt \
               || { echo "::error::missing usr/bin/ollama"; exit 1; }
             echo "  contains usr/bin/ollama"
 
-            runners=$(bsdtar -tf "$pkg" | grep -c 'lib/ollama/cuda_v11/' || true)
+            runners=$(grep -c 'lib/ollama/cuda_v11/' /tmp/entries.txt || true)
             echo "  cuda_v11 runner files: ${runners}"
             if (( runners == 0 )); then
               echo "::error::the package contains no cuda_v11 CUDA runners"

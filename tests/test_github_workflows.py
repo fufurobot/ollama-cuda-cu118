@@ -271,3 +271,38 @@ def test_container_scripts_are_separate_files() -> None:
         scripts = REPO_ROOT / ".github" / "scripts"
         assert scripts.is_dir(), f"{path.name} references /scripts but {scripts} is missing"
         assert list(scripts.glob("*.sh")), "no container script found"
+
+
+def test_archive_path_checks_are_format_agnostic() -> None:
+    """Archive entries differ between makepkg and a hand-built archive.
+
+    makepkg emits "opt/..." while `bsdtar -cf archive .` emits "./opt/...".
+    A check hard-coding either form fails against the other: this is what made
+    the release workflow report "missing /opt/cuda-11.8/bin/nvcc" for a package
+    that demonstrably contained it.
+    """
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        if "bsdtar -tf" not in text:
+            continue
+        assert "sed 's|^\\./||'" in text, (
+            f"{path.name} matches archive entries without normalising the "
+            "leading './', so it only works for one archive producer"
+        )
+
+
+def test_release_verifies_the_main_package_separately() -> None:
+    """A split PKGBUILD produces several packages; checks must target the main one."""
+    if not _release_workflows():
+        pytest.skip("no release workflow in this repository")
+    for path in _release_workflows():
+        text = path.read_text(encoding="utf-8")
+        if "pkg.tar.zst" not in text:
+            continue
+        # Sizing/splitting must iterate all packages, since a split package
+        # yields more than one artifact and they differ in size.
+        assert "for pkg in" in text, (
+            f"{path.name} does not iterate the built packages"
+        )
